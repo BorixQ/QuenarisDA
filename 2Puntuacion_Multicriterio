@@ -1,0 +1,343 @@
+import pandas as pd
+import geopandas as gpd
+import numpy as np
+import json
+import os
+from datetime import datetime
+from typing import Dict, List
+
+# ============================================================================
+# MÓDULO 2: SISTEMA DE PUNTUACIÓN MULTICRITERIO
+# ============================================================================
+
+class SuitabilityScorer:
+    """
+    Sistema de evaluación multicriterio para priorización de sitios.
+    Recibe datos puros del Módulo 1 y genera puntuaciones ponderadas.
+    """
+    
+    def __init__(self, output_dir: str = 'datos_scoring'):
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # Pesos por criterio (suman 100%)
+        self.weights = {
+            'vigor_vegetal': 0.30,        # 30%
+            'disponibilidad_hidrica': 0.25,  # 25%
+            'condiciones_suelo': 0.20,    # 20%
+            'topografia': 0.15,           # 15%
+            'bajo_estres': 0.10           # 10%
+        }
+    
+    # ========================================================================
+    # FUNCIONES DE NORMALIZACIÓN
+    # ========================================================================
+    
+    def normalize(self, series: pd.Series, min_val: float, max_val: float, 
+                  invert: bool = False) -> pd.Series:
+        """
+        Normaliza serie a rango 0-1
+        
+        Args:
+            series: Serie de pandas a normalizar
+            min_val: Valor mínimo esperado
+            max_val: Valor máximo esperado
+            invert: Si True, invierte la escala (mayor valor = peor)
+        """
+        normalized = (series - min_val) / (max_val - min_val)
+        normalized = normalized.clip(0, 1)
+        
+        if invert:
+            normalized = 1 - normalized
+        
+        return normalized
+    
+    # ========================================================================
+    # CÁLCULO DE SUB-PUNTUACIONES
+    # ========================================================================
+    
+    def score_vigor_vegetal(self, gdf: gpd.GeoDataFrame) -> pd.Series:
+        """
+        VIGOR VEGETAL (30 puntos)
+        Indicadores: NDVI, EVI, LAI
+        """
+        ndvi_score = self.normalize(gdf['NDVI'], 0, 0.8) * 10
+        evi_score = self.normalize(gdf['EVI'], 0, 0.6) * 10
+        lai_score = self.normalize(gdf['LAI'], 0, 5) * 10
+        
+        return ndvi_score + evi_score + lai_score
+    
+    def score_disponibilidad_hidrica(self, gdf: gpd.GeoDataFrame) -> pd.Series:
+        """
+        DISPONIBILIDAD HÍDRICA (25 puntos)
+        Indicadores: NDMI, NDWI, MoistureStress (invertido)
+        """
+        ndmi_score = self.normalize(gdf['NDMI'], -0.2, 0.4) * 10
+        ndwi_score = self.normalize(gdf['NDWI'], -0.3, 0.3) * 8
+        # Invertir MoistureStress (bajo estrés = bueno)
+        moisture_score = self.normalize(gdf['MoistureStress'], -0.5, 0.5, invert=True) * 7
+        
+        return ndmi_score + ndwi_score + moisture_score
+    
+    def score_condiciones_suelo(self, gdf: gpd.GeoDataFrame) -> pd.Series:
+        """
+        CONDICIONES DE SUELO (20 puntos)
+        Indicadores: BSI (invertido), NBR
+        """
+        # Bajo BSI es mejor (menos suelo desnudo)
+        bsi_score = self.normalize(gdf['BSI'], -0.5, 0.5, invert=True) * 10
+        nbr_score = self.normalize(gdf['NBR'], 0, 0.6) * 10
+        
+        return bsi_score + nbr_score
+    
+    def score_topografia(self, gdf: gpd.GeoDataFrame) -> pd.Series:
+        """
+        TOPOGRAFÍA FAVORABLE (15 puntos)
+        Indicadores: Pendiente óptima (5-25°), Exposición solar moderada
+        """
+        # Pendiente óptima: 5-25 grados (gaussiana centrada en 15°)
+        slope_optimal = np.abs(gdf['Slope'] - 15)
+        slope_score = self.normalize(slope_optimal, 0, 15, invert=True) * 8
+        
+        # Exposición solar moderada (no extremos)
+        solar_deviation = np.abs(gdf['SolarExposure'] - 0.5)
+        solar_score = self.normalize(solar_deviation, 0, 0.5, invert=True) * 7
+        
+        return slope_score + solar_score
+    
+    def score_bajo_estres(self, gdf: gpd.GeoDataFrame) -> pd.Series:
+        """
+        BAJO ESTRÉS (10 puntos)
+        Indicadores: WDI (invertido), PSRI (invertido)
+        """
+        wdi_score = self.normalize(gdf['WDI'], 0, 2, invert=True) * 5
+        psri_score = self.normalize(gdf['PSRI'], -0.2, 0.2, invert=True) * 5
+        
+        return wdi_score + psri_score
+    
+    # ========================================================================
+    # PUNTUACIÓN TOTAL
+    # ========================================================================
+    
+    def calculate_suitability_score(self, gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """
+        Calcula puntuación de idoneidad total (0-100)
+        
+        Returns:
+            GeoDataFrame con columnas adicionales de puntuación
+        """
+        print("🧮 Calculando puntuaciones multicriterio...")
+        
+        # Calcular sub-puntuaciones
+        gdf['Score_Vigor'] = self.score_vigor_vegetal(gdf)
+        gdf['Score_Hidrica'] = self.score_disponibilidad_hidrica(gdf)
+        gdf['Score_Suelo'] = self.score_condiciones_suelo(gdf)
+        gdf['Score_Topografia'] = self.score_topografia(gdf)
+        gdf['Score_Estres'] = self.score_bajo_estres(gdf)
+        
+        # Puntuación total
+        gdf['SuitabilityScore'] = (
+            gdf['Score_Vigor'] + 
+            gdf['Score_Hidrica'] + 
+            gdf['Score_Suelo'] + 
+            gdf['Score_Topografia'] + 
+            gdf['Score_Estres']
+        )
+        
+        print(f"✅ Puntuación calculada: {gdf['SuitabilityScore'].min():.1f} - {gdf['SuitabilityScore'].max():.1f}")
+        
+        return gdf
+    
+    def classify_priority(self, gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """Clasifica sitios por nivel de prioridad"""
+        
+        conditions = [
+            (gdf['SuitabilityScore'] >= 75),
+            (gdf['SuitabilityScore'] >= 50),
+            (gdf['SuitabilityScore'] >= 25),
+            (gdf['SuitabilityScore'] < 25)
+        ]
+        choices = ['Muy Alta', 'Alta', 'Media', 'Baja']
+        gdf['Prioridad'] = np.select(conditions, choices, default='Sin Datos')
+        
+        return gdf
+    
+    # ========================================================================
+    # EXPORTACIÓN
+    # ========================================================================
+    
+    def export_scored_geojson(self, gdf: gpd.GeoDataFrame, filename: str = None):
+        """Exporta GeoJSON con puntuaciones"""
+        
+        if filename is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'sitios_puntuados_{timestamp}.geojson'
+        
+        filepath = os.path.join(self.output_dir, filename)
+        
+        metadata = {
+            "type": "FeatureCollection",
+            "metadata": {
+                "title": "Evaluación Multicriterio de Sitios",
+                "description": "Puntuación de idoneidad para reforestación",
+                "created": datetime.now().isoformat(),
+                "scoring_method": "Weighted Multi-Criteria Evaluation",
+                "weights": self.weights,
+                "total_sites": len(gdf),
+                "priority_distribution": gdf['Prioridad'].value_counts().to_dict()
+            },
+            "features": json.loads(gdf.to_json())['features']
+        }
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        
+        print(f"💾 GeoJSON exportado: {filepath}")
+        return filepath
+    
+    def export_priority_summary(self, gdf: gpd.GeoDataFrame):
+        """Exporta resumen por prioridad"""
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        summary_file = os.path.join(self.output_dir, f'resumen_prioridades_{timestamp}.csv')
+        
+        summary = gdf.groupby('Prioridad').agg({
+            'SuitabilityScore': ['count', 'mean', 'std', 'min', 'max'],
+            'NDVI': 'mean',
+            'NDMI': 'mean',
+            'Slope': 'mean',
+            'Elevation': 'mean'
+        }).round(3)
+        
+        summary.to_csv(summary_file)
+        
+        print(f"📊 Resumen exportado: {summary_file}")
+        print("\n📋 Distribución de Prioridades:")
+        print(gdf['Prioridad'].value_counts().sort_index())
+        
+        return summary_file
+    
+    # ========================================================================
+    # FLUJO PRINCIPAL
+    # ========================================================================
+    
+    def score_sites(self, gdf: gpd.GeoDataFrame, export: bool = True) -> gpd.GeoDataFrame:
+        """
+        Procesa GeoDataFrame con índices y añade puntuaciones
+        
+        Args:
+            gdf: GeoDataFrame del Módulo 1 con índices puros
+            export: Si True, exporta resultados
+        
+        Returns:
+            GeoDataFrame con puntuaciones añadidas
+        """
+        
+        print("="*60)
+        print("🎯 SISTEMA DE PUNTUACIÓN MULTICRITERIO")
+        print("="*60)
+        
+        # Verificar columnas requeridas
+        required_cols = ['NDVI', 'EVI', 'LAI', 'NDMI', 'NDWI', 'MoistureStress',
+                        'BSI', 'NBR', 'Slope', 'SolarExposure', 'WDI', 'PSRI']
+        
+        missing = [col for col in required_cols if col not in gdf.columns]
+        if missing:
+            raise ValueError(f"Faltan columnas requeridas: {missing}")
+        
+        # Calcular puntuaciones
+        gdf = self.calculate_suitability_score(gdf)
+        gdf = self.classify_priority(gdf)
+        
+        # Exportar resultados
+        if export:
+            self.export_scored_geojson(gdf)
+            self.export_priority_summary(gdf)
+        
+        print("\n" + "="*60)
+        print("✅ PUNTUACIÓN COMPLETADA")
+        print("="*60)
+        
+        return gdf
+
+
+# ============================================================================
+# EJEMPLO DE USO - INTEGRACIÓN DE MÓDULOS 1 Y 2
+# ============================================================================
+
+if __name__ == "__main__":
+    
+    # ========================================================================
+    # FLUJO COMPLETO: MÓDULO 1 + MÓDULO 2
+    # ========================================================================
+    
+    print("\n" + "="*70)
+    print("EJEMPLO: FLUJO MODULAR COMPLETO")
+    print("="*70)
+    
+    # --- PASO 1: Cargar datos del Módulo 1 (indices puros) ---
+    # Supongamos que ya ejecutaste el Módulo 1 y tienes un CSV/GeoJSON
+    
+    # Opción A: Cargar desde GeoJSON
+    # gdf_indices = gpd.read_file('datos_indices_puros/indices_puros_20250118.geojson')
+    
+    # Opción B: Cargar desde CSV (recrear geometría)
+    # df = pd.read_csv('datos_indices_puros/indices_puros_20250118.csv')
+    # from shapely.geometry import Point
+    # gdf_indices = gpd.GeoDataFrame(
+    #     df, 
+    #     geometry=[Point(xy) for xy in zip(df.longitude, df.latitude)],
+    #     crs='EPSG:4326'
+    # )
+    
+    # Para este ejemplo, creamos datos simulados:
+    print("\n📦 Cargando datos del Módulo 1...")
+    # (En producción, cargarías el archivo real del Módulo 1)
+    
+    # Datos simulados para demostración
+    np.random.seed(42)
+    n_points = 100
+    
+    data = {
+        'point_id': range(1, n_points + 1),
+        'longitude': np.random.uniform(-71.34, -71.32, n_points),
+        'latitude': np.random.uniform(-16.44, -16.42, n_points),
+        'NDVI': np.random.uniform(0.2, 0.7, n_points),
+        'EVI': np.random.uniform(0.1, 0.5, n_points),
+        'LAI': np.random.uniform(0.5, 4, n_points),
+        'NDMI': np.random.uniform(-0.1, 0.3, n_points),
+        'NDWI': np.random.uniform(-0.2, 0.2, n_points),
+        'MoistureStress': np.random.uniform(-0.3, 0.3, n_points),
+        'BSI': np.random.uniform(-0.3, 0.3, n_points),
+        'NBR': np.random.uniform(0.1, 0.5, n_points),
+        'Slope': np.random.uniform(5, 30, n_points),
+        'SolarExposure': np.random.uniform(0.2, 0.8, n_points),
+        'WDI': np.random.uniform(0.5, 1.5, n_points),
+        'PSRI': np.random.uniform(-0.1, 0.1, n_points),
+        'Elevation': np.random.uniform(2000, 2500, n_points),
+    }
+    
+    from shapely.geometry import Point
+    gdf_indices = gpd.GeoDataFrame(
+        data,
+        geometry=[Point(xy) for xy in zip(data['longitude'], data['latitude'])],
+        crs='EPSG:4326'
+    )
+    
+    print(f"✅ Cargados {len(gdf_indices)} puntos con índices")
+    
+    # --- PASO 2: Aplicar sistema de puntuación (Módulo 2) ---
+    scorer = SuitabilityScorer()
+    gdf_scored = scorer.score_sites(gdf_indices, export=True)
+    
+    # --- PASO 3: Analizar resultados ---
+    print("\n🏆 Top 10 sitios con mayor puntuación:")
+    top10 = gdf_scored.nlargest(10, 'SuitabilityScore')[
+        ['point_id', 'SuitabilityScore', 'Prioridad', 'NDVI', 'NDMI', 'Slope']
+    ]
+    print(top10.to_string(index=False))
+    
+    print("\n" + "="*70)
+    print("💡 SIGUIENTE PASO: Aplicar clustering (K-means, DBSCAN)")
+    print("   Usa 'datos_indices_puros/*.csv' como entrada para tu modelo IA")
+    print("="*70)

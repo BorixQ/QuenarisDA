@@ -1,0 +1,26 @@
+======================================================================
+RESUMEN DE CAMPAÑA DE REFORESTACIÓN
+======================================================================
+
+📅 Fecha de generación: 2026-01-18 18:26
+🌱 Total de sitios: 1000
+
+📊 ESTADÍSTICAS DE SUPERVIVENCIA:
+   • Score promedio: 86.0/100
+   • Score mínimo: 83.5/100
+   • Score máximo: 91.4/100
+
+🌟 SITIOS EXCEPCIONALES:
+   • Total: 236 (23.6%)
+
+🗺️  DISTRIBUCIÓN ESPACIAL:
+   • Clusters identificados: 1
+   • Sitios por cluster (promedio): 1000
+
+💡 RECOMENDACIONES:
+   1. Priorizar sitios con is_exceptional = True
+   2. Plantar en orden descendente de survival_score
+   3. Usar coordenadas (latitude, longitude) con GPS de precisión
+   4. Considerar cluster_spatial para logística de brigadas
+
+======================================================================

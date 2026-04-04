@@ -1,0 +1,5 @@
+,SuitabilityScore,SuitabilityScore,SuitabilityScore,SuitabilityScore,SuitabilityScore,NDVI,NDMI,Slope,Elevation
+,count,mean,std,min,max,mean,mean,mean,mean
+Prioridad,,,,,,,,,
+Alta,61,54.545,4.0,50.03,66.751,0.488,0.111,17.442,2261.505
+Media,39,46.722,2.62,40.426,49.871,0.414,0.109,19.727,2253.292
